@@ -65,16 +65,15 @@ fn signature(hd: &HeaderMap) -> (Vec<u8>, Vec<u8>) {
 
 async fn handler(body: &Bytes) -> Result<Response<Body>, hyper::Error> {
     let i: Interaction = serde_json::from_slice(body.as_ref()).unwrap();
-
-    let oo: Result<hyper::Response<hyper::Body>, hyper::Error> = Ok(InteractionResponse {
-        interaction_response_type: InteractionResponseType::Pong,
-        data: None,
-    }
-    .into_response());
-
     match i.interaction_type {
-        InteractionType::Ping => oo,
-        InteractionType::ApplicationCommand => oo,
+        InteractionType::Ping => Ok(InteractionResponse {
+            interaction_response_type: InteractionResponseType::Pong,
+            data: None,
+        }
+        .into_response()),
+        InteractionType::ApplicationCommand => {
+            Ok(InteractionResponse::reply(String::from("songxinran")).into_response())
+        }
     }
 }
 
