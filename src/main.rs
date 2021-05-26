@@ -1,7 +1,7 @@
 use ed25519_compact::{Error, PublicKey, Signature};
-use hyper::body::HttpBody;
+use hyper::body::{Bytes, HttpBody};
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use hyper::{Body, HeaderMap, Method, Request, Response, Server, StatusCode};
 use model::{Interaction, InteractionResponse, InteractionResponseType, InteractionType};
 use std::env;
 
@@ -24,19 +24,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// This is our service handler. It receives a Request, routes on its
 /// path, and returns a Future of a Response.
-async fn route(mut req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+async fn route(req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
     match (req.method(), req.uri().path()) {
-        (&Method::POST, "/") => match validate(&mut req).await {
-            Ok(_) => handler(req).await,
-            Err(_) => unauthorized(),
-        },
+        (&Method::POST, "/") => {
+            let (pt, mut bd) = req.into_parts();
+            let bybd = bd.data().await.unwrap().unwrap();
+            match validate(&bybd, &pt.headers).await {
+                Ok(_) => handler(&bybd).await,
+                Err(_) => unauthorized(),
+            }
+        }
         _ => unauthorized(),
     }
 }
 
-async fn handler(req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
-    let b = hyper::body::to_bytes(req).await?;
-    let i: Interaction = serde_json::from_slice(b.as_ref()).unwrap();
+async fn validate(body: &Bytes, hd: &HeaderMap) -> Result<(), Error> {
+    let (decoded_header, ts) = signature(hd);
+    let content = ts
+        .iter()
+        .chain(body.iter().clone())
+        .cloned()
+        .collect::<Vec<u8>>();
+
+    let pk =
+        PublicKey::from_slice(&hex::decode(env::var("DISCORD_PUBLIC_KEY").expect("")).expect(""))
+            .expect("");
+
+    let sig = Signature::from_slice(&decoded_header).expect("");
+    pk.verify(content, &sig)
+}
+
+fn signature(hd: &HeaderMap) -> (Vec<u8>, Vec<u8>) {
+    let sig = hd.get("X-Signature-Ed25519").expect("");
+    let ts = hd.get("X-Signature-Timestamp").unwrap();
+    let sss: Vec<u8> = ts.to_str().unwrap().as_bytes().to_vec();
+
+    let sig = hex::decode(sig).expect("");
+    (sig, sss)
+}
+
+async fn handler(body: &Bytes) -> Result<Response<Body>, hyper::Error> {
+    let i: Interaction = serde_json::from_slice(body.as_ref()).unwrap();
 
     let oo: Result<hyper::Response<hyper::Body>, hyper::Error> = Ok(InteractionResponse {
         interaction_response_type: InteractionResponseType::Pong,
@@ -54,29 +82,4 @@ fn unauthorized() -> Result<Response<Body>, hyper::Error> {
     let mut not_found = Response::default();
     *not_found.status_mut() = StatusCode::UNAUTHORIZED;
     Ok(not_found)
-}
-
-async fn validate(req: &mut Request<Body>) -> Result<(), Error> {
-    let (decoded_header, ts) = signature(req);
-    let sss = req.body_mut().data().await;
-    let aaa = sss.unwrap().unwrap();
-    let content = ts.iter().chain(aaa.iter()).cloned().collect::<Vec<u8>>();
-
-    let pk =
-        PublicKey::from_slice(&hex::decode(env::var("DISCORD_PUBLIC_KEY").expect("")).expect(""))
-            .expect("");
-
-    let sig = Signature::from_slice(&decoded_header).expect("");
-
-    pk.verify(content, &sig)
-}
-
-fn signature(req: &Request<Body>) -> (Vec<u8>, Vec<u8>) {
-    let headers = req.headers();
-    let sig = headers.get("X-Signature-Ed25519").expect("");
-    let ts = headers.get("X-Signature-Timestamp").unwrap();
-    let sss: Vec<u8> = ts.to_str().unwrap().as_bytes().to_vec();
-
-    let sig = hex::decode(sig).expect("");
-    (sig, sss)
 }
